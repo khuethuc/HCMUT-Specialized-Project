@@ -6,6 +6,7 @@ import copy
 import numpy as np
 from .utils import flatten_tensors, unflatten_tensors, ForkedPdb
 from collections import defaultdict
+import math
 
 def scaled_sign(x):
     """
@@ -180,27 +181,85 @@ class CompNGC_receiver():
         for rank, flat_tenor  in neighbor_grads_comp.items():
             neighbor_grads_comp[rank] = self._unflatten_(flat_tenor, ref_buf)
         
-        #get the projected gradients for each parameter
-        count = 0 
+        ### Compute ω_i and ε_i (bias)
+        omega_sum = 0.0  # data-variance bias
+        eps_sum   = 0.0  # model-variance bias
+
+        num_nb_comm = max(1, len(neighbor_grads_comm))
+        num_nb_comp = max(1, len(neighbor_grads_comp))
+
+        corr_grads_dict   = {}
+        new_param_memory  = [None] * len(self.param_memory)
+
+        count = 0
+        for name, self_params in self.model.module.named_parameters():
+            if not self_params.requires_grad:
+                continue
+
+            raw_grad = self_params.grad.data
+            mem_old  = self.param_memory[count]
+
+            # compress self-gradient
+            corrected_gradient = mem_old + raw_grad
+            corrected_gradient = scaled_sign(corrected_gradient)
+            mem_new            = mem_old + raw_grad - corrected_gradient
+
+            corr_grads_dict[name]  = corrected_gradient
+            new_param_memory[count] = mem_new
+
+            # data-variance bias: g_ij - g_ii
+            for rank, neigh_grad in neighbor_grads_comm.items():
+                g_ij = neigh_grad[name]
+                omega_sum += (g_ij - corrected_gradient).norm()
+
+            # model-variance bias: g_ji - g_ii
+            for rank, neigh_grad in neighbor_grads_comp.items():
+                g_ji = neigh_grad[name]
+                eps_sum += (g_ji - corrected_gradient).norm()
+
+            count += 1
+            
+        for idx, mem_new in enumerate(new_param_memory):
+            if mem_new is not None:
+                self.param_memory[idx] = mem_new
+
+        omega_i   = omega_sum / float(num_nb_comm)
+        epsilon_i = eps_sum   / float(num_nb_comp)
+
+        self.alpha = self.adaptive_alpha(omega_i, epsilon_i)
+
+        self.last_alpha   = self.alpha
+        self.last_omega   = omega_i
+        self.last_epsilon = epsilon_i
+
+        ### Compute project_grads with new alpha
+        count = 0
         for name, self_params in self.model.module.named_parameters():
             if self_params.requires_grad:
                 cross_grads_comm = []
                 cross_grads_comp = []
+
+                # g_ij from neighbors
                 for rank, neigh_grad in neighbor_grads_comm.items():
                     cross_grads_comm.append(neigh_grad[name])
-                #compress self gradients
-                corrected_gradient = self.param_memory[count]+self_params.grad.data
-                corrected_gradient = scaled_sign(corrected_gradient)
-                self.param_memory[count] = self.param_memory[count]+self_params.grad.data - corrected_gradient
-                cross_grads_comm.append(corrected_gradient)
+
+                # g_ji from neighbors
                 for rank, neigh_grad in neighbor_grads_comp.items():
                     cross_grads_comp.append(neigh_grad[name])
-                cross_grads_comp.append(corrected_gradient) # added twice so we can use self.pi/2 as weight
-                p_grads_comm  = self.average_gradients(cross_grads_comm)
-                p_grads_comp  = self.average_gradients(cross_grads_comp)
-                p_grads       = ((1-self.alpha)*p_grads_comp)+(self.alpha*p_grads_comm)
+
+                # corrected_gradient
+                corrected_gradient = corr_grads_dict[name]
+                cross_grads_comm.append(corrected_gradient)
+                cross_grads_comp.append(corrected_gradient)
+
+                p_grads_comm = self.average_gradients(cross_grads_comm)
+                p_grads_comp = self.average_gradients(cross_grads_comp)
+
+                # NGC mixing with new alpha
+                p_grads = ((1.0 - self.alpha) * p_grads_comp) + (self.alpha * p_grads_comm)
                 self.proj_grads[name] = p_grads
-                count+=1
+                count += 1
+
         return
                 
 
@@ -239,6 +298,27 @@ class CompNGC_receiver():
 
         self.lr = lr
         
-        
-                
+    def adaptive_alpha(self, omega, epsilon):
+        """
+        Returns
+            adaptive alpha based on omega and epsilon 
+            with L2 normalization on (omega, epsilon)
+        """
+        # L2-normalize (omega, epsilon)
+        l2_norm = math.sqrt(omega**2 + epsilon**2)
+        if l2_norm > 0.0:
+            omega_n   = omega   / l2_norm
+            epsilon_n = epsilon / l2_norm
+        else:
+            omega_n   = 0.0
+            epsilon_n = 0.0
+        # Compute alpha
+        min_val = min(omega_n, epsilon_n)
+        max_val = max(omega_n, epsilon_n)
+
+        if max_val == min_val:
+            return 0.5
+        else:
+            return (omega_n + epsilon_n - min_val) / (max_val - min_val)
+         
              

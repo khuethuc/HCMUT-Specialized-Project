@@ -6,6 +6,7 @@ import copy
 import numpy as np
 from .utils import flatten_tensors, unflatten_tensors
 from collections import defaultdict
+import math
 
 class NGC_sender():
     def __init__(self, true_model, device):
@@ -22,8 +23,6 @@ class NGC_sender():
         self.device          = device
         self.criterion       = torch.nn.CrossEntropyLoss().to(device)
         
-        
-
     def _update_model(self, state_dict):
         """
             Args:
@@ -52,7 +51,6 @@ class NGC_sender():
     def _clear_gradient_buffer(self):
         self.gradient_buffer = {}
         return
-
 
     def _flatten_(self, G):
         """
@@ -108,7 +106,6 @@ class NGC_receiver():
             new_grad +=self.pi*g
         return new_grad #Ftorch.clamp(new_grad,min=-1.0,max=1.0)
  
-
     def _unflatten_(self, flat_tensor, ref_buf):
         """
             Args
@@ -142,8 +139,37 @@ class NGC_receiver():
         for rank, flat_tenor  in neighbor_grads_comp.items():
             neighbor_grads_comp[rank] = self._unflatten_(flat_tenor, ref_buf)
         
+        ### Compute ω_i và ε_i (biases)
+        omega_sum = 0.0
+        eps_sum   = 0.0
+
+        num_nb_comm = max(1, len(neighbor_grads_comm))
+        num_nb_comp = max(1, len(neighbor_grads_comp))
+
+        for name, self_params in self.model.module.named_parameters():
+            if not self_params.requires_grad:
+                continue
+            g_ii = self_params.grad.data
+            # data-variance bias: g_ij vs g_ii
+            for rank, neigh_grad in neighbor_grads_comm.items():
+                g_ij = neigh_grad[name]
+                omega_sum += (g_ij - g_ii).norm()
+            # model-variance bias: g_ji vs g_ii
+            for rank, neigh_grad in neighbor_grads_comp.items():
+                g_ji = neigh_grad[name]
+                eps_sum += (g_ji - g_ii).norm()
+
+        omega_i   = omega_sum / float(num_nb_comm)
+        epsilon_i = eps_sum   / float(num_nb_comp)
+
+        ### Update adaptive alpha for current iteration
+        self.alpha = self.adaptive_alpha(omega_i, epsilon_i)
+
+        self.last_omega   = omega_i
+        self.last_epsilon = epsilon_i
+        self.last_alpha   = self.alpha
         
-        #get the projected gradients for each parameter
+        # get the projected gradients for each parameter
         for name, self_params in self.model.module.named_parameters():
             if self_params.requires_grad:
                 cross_grads_comm = []
@@ -155,13 +181,12 @@ class NGC_receiver():
                 cross_grads_comp = []
                 for rank, neigh_grad in neighbor_grads_comp.items():
                     cross_grads_comp.append(neigh_grad[name])
-                cross_grads_comp.append(self_params.grad.data) # added twice so we can use self.pi/2 as weight
+                cross_grads_comp.append(self_params.grad.data)
                 p_grads_comp  = self.average_gradients(cross_grads_comp)
                 
                 self.proj_grads[name] = ((1-self.alpha)*p_grads_comp)+(self.alpha*p_grads_comm)
         return 
                 
-
     def project_gradients(self, lr):
         """
             Returns
@@ -197,6 +222,29 @@ class NGC_receiver():
 
         self.lr = lr
         
-        
+    
+
+    def adaptive_alpha(self, omega, epsilon):
+        """
+        Returns
+            adaptively computes alpha based on omega and epsilon
+            with L2 normalization on (omega, epsilon)
+        """
+        # L2-normalize (omega, epsilon)
+        l2_norm = math.sqrt(omega**2 + epsilon**2)
+        if l2_norm > 0:
+            omega_n   = omega   / l2_norm
+            epsilon_n = epsilon / l2_norm
+        else:
+            omega_n = 0.0
+            epsilon_n = 0.0
+        # Compute alpha
+        min_val = min(omega_n, epsilon_n)
+        max_val = max(omega_n, epsilon_n)
+
+        if max_val == min_val:
+            return 0.5
+        else:
+            return (omega_n + epsilon_n - min_val) / (max_val - min_val)
+     
                 
-             
