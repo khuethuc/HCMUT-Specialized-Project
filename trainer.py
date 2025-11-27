@@ -2,7 +2,6 @@ import argparse
 import os
 import shutil
 import time
-from tkinter import E
 import numpy as np
 import statistics 
 import copy
