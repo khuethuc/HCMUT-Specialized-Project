@@ -317,7 +317,7 @@ class CompNGC_receiver():
         max_val = max(omega_n, epsilon_n)
 
         if max_val == min_val:
-            return 0.5
+            return 0
         else:
             return (omega_n + epsilon_n - min_val) / (max_val - min_val)
          
