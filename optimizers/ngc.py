@@ -164,10 +164,6 @@ class NGC_receiver():
 
         ### Update adaptive alpha for current iteration
         self.alpha = self.adaptive_alpha(omega_i, epsilon_i)
-
-        self.last_omega   = omega_i
-        self.last_epsilon = epsilon_i
-        self.last_alpha   = self.alpha
         
         # get the projected gradients for each parameter
         for name, self_params in self.model.module.named_parameters():
@@ -231,20 +227,20 @@ class NGC_receiver():
             with L2 normalization on (omega, epsilon)
         """
         # L2-normalize (omega, epsilon)
-        l2_norm = math.sqrt(omega**2 + epsilon**2)
-        if l2_norm > 0:
-            omega_n   = omega   / l2_norm
-            epsilon_n = epsilon / l2_norm
-        else:
-            omega_n = 0.0
-            epsilon_n = 0.0
+        # l2_norm = math.sqrt(omega**2 + epsilon**2)
+        # if l2_norm > 0:
+        #     omega_n   = omega   / l2_norm
+        #     epsilon_n = epsilon / l2_norm
+        # else:
+        #     omega_n = 0.0
+        #     epsilon_n = 0.0
         # Compute alpha
-        min_val = min(omega_n, epsilon_n)
-        max_val = max(omega_n, epsilon_n)
+        min_val = min(omega, epsilon)
+        max_val = max(omega, epsilon)
 
         if max_val == min_val:
             return 0
         else:
-            return (omega_n + epsilon_n - min_val) / (max_val - min_val)
+            return (omega + epsilon - min_val) / (max_val - min_val)
      
                 
