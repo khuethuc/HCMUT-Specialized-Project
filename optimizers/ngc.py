@@ -223,14 +223,31 @@ class NGC_receiver():
                         p.grad.data.copy_(buf) 
 
         self.lr = lr
-        
-    
 
-    def adaptive_alpha(self, omega, epsilon):
+    def adaptive_alpha_v1(self, omega, epsilon):
         """
-        Returns
-            adaptively computes alpha based on omega and epsilon
-            with L2 normalization on (omega, epsilon)
+        alpha = omega / (omega + epsilon)
+        """
+        l2 = math.sqrt(omega**2 + epsilon**2)
+        if l2 > 0.0:
+            omega_n   = omega   / l2
+            epsilon_n = epsilon / l2
+        else:
+            omega_n   = 0.0
+            epsilon_n = 0.0
+
+        denom = omega_n + epsilon_n
+        if denom <= 0.0:
+            return 1.0 
+
+        alpha = omega_n / denom
+
+        alpha = max(0.0, min(1.0, alpha))
+        return alpha
+
+    def adaptive_alpha_v2(self, omega, epsilon):
+        """
+        alpha = (omega + epsilon - min(omega, epsilon)) / (max(omega, epsilon) - min(omega, epsilon))
         """
         # L2-normalize (omega, epsilon)
         l2_norm = math.sqrt(omega**2 + epsilon**2)
