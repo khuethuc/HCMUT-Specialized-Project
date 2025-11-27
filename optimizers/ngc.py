@@ -169,8 +169,8 @@ class NGC_receiver():
         epsilon_i = eps_sum   / float(num_nb_comp)
 
         ### Update adaptive alpha for current iteration
-        self.alpha = self.adaptive_alpha(omega_i, epsilon_i)
-
+        self.alpha = self.adaptive_alpha_v1(omega_i, epsilon_i)
+        # print(f"alpha = {self.alpha}, omega = {omega_i}, epsilon = {epsilon_i}")
         # get the projected gradients for each parameter
         for name, self_params in self.model.module.named_parameters():
             if self_params.requires_grad:
@@ -228,20 +228,8 @@ class NGC_receiver():
         """
         alpha = omega / (omega + epsilon)
         """
-        l2 = math.sqrt(omega**2 + epsilon**2)
-        if l2 > 0.0:
-            omega_n   = omega   / l2
-            epsilon_n = epsilon / l2
-        else:
-            omega_n   = 0.0
-            epsilon_n = 0.0
-
-        denom = omega_n + epsilon_n
-        if denom <= 0.0:
-            return 1.0 
-
-        alpha = omega_n / denom
-
+        denom = omega + epsilon
+        alpha = omega / denom
         alpha = max(0.0, min(1.0, alpha))
         return alpha
 
@@ -251,18 +239,19 @@ class NGC_receiver():
         """
         # L2-normalize (omega, epsilon)
         l2_norm = math.sqrt(omega**2 + epsilon**2)
-        if l2_norm > 0:
-            omega_n   = omega   / l2_norm
-            epsilon_n = epsilon / l2_norm
-        else:
-            omega_n = 0.0
-            epsilon_n = 0.0
+        omega_n   = omega   / l2_norm
+        epsilon_n = epsilon / l2_norm
         # Compute alpha
         min_val = min(omega_n, epsilon_n)
         max_val = max(omega_n, epsilon_n)
-
         if max_val == min_val:
-            return 0
+            return 1.0
         else:
-            return (omega + epsilon - min_val) / (max_val - min_val)
+            return (max_val - min_val) / (omega + epsilon - min_val)
+
+    def adaptive_alpha_v3(self, omega, epsilon):
+        """
+        alpha = (omega + epsilon - min(omega, epsilon)) / (max(omega, epsilon) - min(omega, epsilon))
+        """
+        return 1.0
 
