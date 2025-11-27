@@ -1,4 +1,3 @@
-
 from scipy.linalg import orth
 import torch
 from torch.autograd import Variable
@@ -7,6 +6,7 @@ import numpy as np
 from .utils import flatten_tensors, unflatten_tensors
 from collections import defaultdict
 import math
+import logging
 
 class NGC_sender():
     def __init__(self, true_model, device):
@@ -99,6 +99,12 @@ class NGC_receiver():
         for param in self.model.module.parameters():
             self.momentum_buff.append(torch.zeros_like(param.data))
             self.prev_params.append(copy.deepcopy(param.data))
+
+        # logging + last values for alpha/omega/epsilon
+        self.logger = logging.getLogger('NGC_receiver')
+        self.last_omega = 0.0
+        self.last_epsilon = 0.0
+        self.last_alpha = float(self.alpha)
     
     def average_gradients(self, grad):
         new_grad = torch.zeros_like(grad[-1])
@@ -164,7 +170,11 @@ class NGC_receiver():
 
         ### Update adaptive alpha for current iteration
         self.alpha = self.adaptive_alpha(omega_i, epsilon_i)
-        
+
+        # print and logger.info so it appears in stdout and logs
+        print(f"[NGC] rank={self.rank} alpha={self.last_alpha:.6f} omega={self.last_omega:.6f} epsilon={self.last_epsilon:.6f}", flush=True)
+        self.logger.info(f"Updated alpha={self.last_alpha:.6f} omega={self.last_omega:.6f} epsilon={self.last_epsilon:.6f}")
+
         # get the projected gradients for each parameter
         for name, self_params in self.model.module.named_parameters():
             if self_params.requires_grad:
@@ -242,5 +252,4 @@ class NGC_receiver():
 
         alpha = max(0.0, min(1.0, alpha))
         return alpha
-     
-                
+
