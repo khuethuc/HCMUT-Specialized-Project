@@ -226,21 +226,21 @@ class NGC_receiver():
             adaptively computes alpha based on omega and epsilon
             with L2 normalization on (omega, epsilon)
         """
-        # L2-normalize (omega, epsilon)
-        # l2_norm = math.sqrt(omega**2 + epsilon**2)
-        # if l2_norm > 0:
-        #     omega_n   = omega   / l2_norm
-        #     epsilon_n = epsilon / l2_norm
-        # else:
-        #     omega_n = 0.0
-        #     epsilon_n = 0.0
-        # Compute alpha
-        min_val = min(omega, epsilon)
-        max_val = max(omega, epsilon)
-
-        if max_val == min_val:
-            return 0
+        l2 = math.sqrt(omega**2 + epsilon**2)
+        if l2 > 0.0:
+            omega_n   = omega   / l2
+            epsilon_n = epsilon / l2
         else:
-            return (omega + epsilon - min_val) / (max_val - min_val)
+            omega_n   = 0.0
+            epsilon_n = 0.0
+
+        denom = omega_n + epsilon_n
+        if denom <= 0.0:
+            return 1.0 
+
+        alpha = omega_n / denom
+
+        alpha = max(0.0, min(1.0, alpha))
+        return alpha
      
                 
