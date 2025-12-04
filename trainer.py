@@ -163,9 +163,7 @@ def run(rank, size):
     elif args.optimizer.lower()=='compcga':
         receiver = CompCGA_receiver(model, device, rank,  args.lr, args.momentum, args.qgm, args.nesterov, weight_decay=args.weight_decay, neighbors=args.neighbors)
     elif args.optimizer.lower()=='ngc':
-        receiver = NGC_receiver(..., alpha=args.alpha, alpha_lr=0.05)
-        optimizer.add_param_group({'params':[receiver.alpha_param], 'lr': args.alpha_lr if hasattr(args,'alpha_lr') else 1e-3})
-        print("Alpha now:", receiver.get_alpha())
+        receiver  = NGC_receiver(model, device, rank, args.lr, args.momentum, args.qgm, args.nesterov, weight_decay=args.weight_decay, neighbors=args.neighbors, alpha = args.alpha)
     elif args.optimizer.lower()=='compngc':
         receiver = CompNGC_receiver(model, device, rank, args.lr, args.momentum, args.qgm, args.nesterov, weight_decay=args.weight_decay, neighbors=args.neighbors, alpha = args.alpha)
     else:
