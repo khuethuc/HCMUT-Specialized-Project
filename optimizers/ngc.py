@@ -1,6 +1,6 @@
-
 from scipy.linalg import orth
 import torch
+import torch.nn as nn
 from torch.autograd import Variable
 import copy
 import numpy as np
@@ -84,13 +84,20 @@ class NGC_sender():
 
 
 class NGC_receiver():
-    def __init__(self, model, device, rank, lr, momentum, qgm, nesterov=True, weight_decay=0, neighbors=2, alpha=1.0):
+    def __init__(self, model, device, rank, lr, momentum, qgm, nesterov=True,
+                 weight_decay=0, neighbors=2, alpha=1.0, alpha_lr=0.05):
         self.model         = model
         self.rank          = rank
         self.device        = device
         self.proj_grads    = {}
         self.pi            = 1.0/float(neighbors+1)      
-        self.alpha         = alpha
+        # replace scalar alpha by a learnable parameter (kept in unconstrained space)
+        self.alpha_param = nn.Parameter(torch.tensor(alpha, dtype=torch.float32))
+        # lr for moving alpha towards heuristic target (if not using optimizer)
+        self.alpha_lr = float(alpha_lr)
+        # keep simple history / logging
+        self.last_alpha = float(alpha)
+        self.alpha_history = []
         self.momentum      = momentum
         self.lr            = lr
         self.nesterov      = nesterov
@@ -128,6 +135,10 @@ class NGC_receiver():
             X[key] = unflat_tensor[i]
         return X
 
+    def _get_alpha(self):
+        # map param to [0,1] via sigmoid (or use torch.clamp if prefer)
+        return torch.sigmoid(self.alpha_param).item()
+
     def __call__(self, neighbor_grads_comm, neighbor_grads_comp, ref_buf):
         """
             Args
@@ -141,25 +152,71 @@ class NGC_receiver():
             neighbor_grads_comm[rank] = self._unflatten_(flat_tenor, ref_buf)
         for rank, flat_tenor  in neighbor_grads_comp.items():
             neighbor_grads_comp[rank] = self._unflatten_(flat_tenor, ref_buf)
-        
-        
-        #get the projected gradients for each parameter
+
+        # --- compute omega_i (data-variance) and epsilon_i (model-variance) ---
+        omega_sum = 0.0
+        eps_sum = 0.0
+        omega_count = 0
+        eps_count = 0
+
         for name, self_params in self.model.module.named_parameters():
-            if self_params.requires_grad:
-                cross_grads_comm = []
-                for rank, neigh_grad in neighbor_grads_comm.items():
-                    cross_grads_comm.append(neigh_grad[name])
-                cross_grads_comm.append(self_params.grad.data)
-                p_grads_comm  = self.average_gradients(cross_grads_comm)
-                
-                cross_grads_comp = []
-                for rank, neigh_grad in neighbor_grads_comp.items():
-                    cross_grads_comp.append(neigh_grad[name])
-                cross_grads_comp.append(self_params.grad.data) # added twice so we can use self.pi/2 as weight
-                p_grads_comp  = self.average_gradients(cross_grads_comp)
-                
-                self.proj_grads[name] = ((1-self.alpha)*p_grads_comp)+(self.alpha*p_grads_comm)
-        return 
+            if not self_params.requires_grad:
+                continue
+            g_ii = self_params.grad.data
+            # data-variance: neighbors' communicated grads vs local grad
+            for _, neigh_grad in neighbor_grads_comm.items():
+                g_ij = neigh_grad.get(name, torch.zeros_like(g_ii))
+                omega_sum += (g_ij - g_ii).norm().item()
+                omega_count += 1
+            # model-variance: neighbors' compensated grads vs local grad
+            for _, neigh_grad in neighbor_grads_comp.items():
+                g_ji = neigh_grad.get(name, torch.zeros_like(g_ii))
+                eps_sum += (g_ji - g_ii).norm().item()
+                eps_count += 1
+
+        omega_i = (omega_sum / omega_count) if omega_count > 0 else 0.0
+        epsilon_i = (eps_sum / eps_count) if eps_count > 0 else 0.0
+        # ---------------------------------------------------------------------
+
+        # compute heuristic target alpha (avoid divide by zero)
+        target = 0.0
+        if (omega_i + epsilon_i) > 0:
+            target = (epsilon_i / (omega_i + epsilon_i))
+        # update alpha_param via simple exponential moving step towards target
+        with torch.no_grad():
+            current = torch.sigmoid(self.alpha_param).item()
+            new_val = current + self.alpha_lr * (float(target) - current)
+            eps = 1e-6
+            new_val = min(max(new_val, eps), 1 - eps)
+            logit = torch.log(torch.tensor(new_val / (1.0 - new_val)))
+            self.alpha_param.data.copy_(logit)
+
+        # store logging copy
+        self.last_alpha = self._get_alpha()
+        self.alpha_history.append(self.last_alpha)
+        # build projected grads per-parameter using the updated alpha
+        alpha_val = torch.sigmoid(self.alpha_param).item()
+        for name, self_params in self.model.module.named_parameters():
+            if not self_params.requires_grad:
+                continue
+
+            # safe gather neighbor grads (use zeros if missing)
+            cross_grads_comm = []
+            for _, neigh_grad in neighbor_grads_comm.items():
+                cross_grads_comm.append(neigh_grad.get(name, torch.zeros_like(self_params.grad.data)))
+            cross_grads_comm.append(self_params.grad.data)
+            p_grads_comm = self.average_gradients(cross_grads_comm)
+
+            cross_grads_comp = []
+            for _, neigh_grad in neighbor_grads_comp.items():
+                cross_grads_comp.append(neigh_grad.get(name, torch.zeros_like(self_params.grad.data)))
+            cross_grads_comp.append(self_params.grad.data)  # included as in original logic
+            p_grads_comp = self.average_gradients(cross_grads_comp)
+
+            # blend using learnable alpha
+            self.proj_grads[name] = ((1.0 - alpha_val) * p_grads_comp) + (alpha_val * p_grads_comm)
+
+        return
                 
 
     def project_gradients(self, lr):
@@ -196,7 +253,10 @@ class NGC_receiver():
                         p.grad.data.copy_(buf) 
 
         self.lr = lr
-        
-        
-                
-             
+
+    def get_alpha(self):
+        return self._get_alpha()
+
+
+
+
