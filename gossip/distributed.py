@@ -465,7 +465,7 @@ class GossipDataParallel(Module):
         passes in all leaf modules
         """
         self.register_forward_pre_hook(self.__make_forward_pre_hook())
-        self.register_backward_hook(self.__make_backward_hook())
+        self.register_full_backward_hook(self.__make_backward_hook())
 
     def __make_backward_hook(self):
         self.logger.debug('making backward hook')

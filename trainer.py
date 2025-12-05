@@ -188,6 +188,14 @@ def run(rank, size):
         data_transferred += dt
         if epoch>=0: lr_scheduler.step()
         prec1, loss = validate(val_loader, model, criterion, bsz_val,device, epoch)
+        # Print alpha information for NGC optimizer
+        if 'ngc' in args.optimizer.lower() and receiver is not None:
+            alpha_info = receiver.get_alpha_info()
+            if alpha_info:
+                print(f'Rank {rank} Epoch {epoch}: alpha={alpha_info["alpha"]:.4f}, '
+                      f'logit_alpha={alpha_info["logit_alpha"]:.4f}, '
+                      f'adaptive={alpha_info["adaptive_alpha"]:.4f}, '
+                      f'omega={alpha_info["omega"]:.6f}, epsilon={alpha_info["epsilon"]:.6f}')
         is_best = prec1 > best_prec1
         best_prec1 = max(prec1, best_prec1)
         save_checkpoint({
